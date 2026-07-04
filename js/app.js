@@ -21,6 +21,7 @@ let dlvState = {};        // teslimat onayı: orderId_idx -> {checked, qty}
 
 // ---------- yardımcılar ----------
 const $ = id => document.getElementById(id);
+const TL = `<span class="tl">₺</span>`;
 const fmt = n => new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 2 }).format(n);
 const fmtInt = n => new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 0 }).format(n);
 const vatOf = p => p?.vat ?? 0.20;
@@ -170,7 +171,7 @@ function renderBar() {
   const total = Object.keys(cart).reduce((s, id) => { const p = products.find(x => x.id == id); return s + (p ? p.price * cart[id] : 0); }, 0);
   $("bar-cta").innerHTML = count === 0
     ? `<span style="color:#8f8e89;font-size:11px;letter-spacing:.12em">SEPET BOŞ</span>`
-    : `<span style="font-size:11px;letter-spacing:.12em;color:#8f8e89">${count} KALEM</span><span>₺${fmtInt(total)} —&nbsp;SEPETE GİT</span>`;
+    : `<span style="font-size:11px;letter-spacing:.12em;color:#8f8e89">${count} KALEM</span><span>${TL}${fmtInt(total)} —&nbsp;SEPETE GİT</span>`;
 }
 
 // ---------- katalog ----------
@@ -204,7 +205,7 @@ function renderCatalog() {
         </div>
       </div>
       <div class="row-side">
-        <div class="price">₺${fmt(p.price)}</div>
+        <div class="price">${TL}${fmt(p.price)}</div>
         ${out ? "" : qty === 0
           ? `<button class="btn-line" onclick="addToCart('${p.id}')">Ekle</button>`
           : `<span class="qty">
@@ -246,10 +247,10 @@ function renderCart() {
       <div class="row-info">
         <div class="eyebrow">No ${esc(p.code || "—")}</div>
         <div class="row-name">${esc(p.name)}</div>
-        <div class="row-sub num">₺${fmt(p.price)} × ${cart[id]} · KDV %${Math.round(vatOf(p) * 100)}</div>
+        <div class="row-sub num">${TL}${fmt(p.price)} × ${cart[id]} · KDV %${Math.round(vatOf(p) * 100)}</div>
       </div>
       <div class="row-side">
-        <div class="price">₺${fmt(lineNet)}</div>
+        <div class="price">${TL}${fmt(lineNet)}</div>
         <span class="qty">
           <button onclick="decCart('${p.id}')" aria-label="Azalt">−</button>
           <input type="number" min="0" value="${cart[id]}" onchange="setQty('${p.id}', this.value)" aria-label="Adet">
@@ -263,9 +264,9 @@ function renderCart() {
     <div class="rows">${rows}</div>
     <div class="section">
       <div class="section-title">Özet</div>
-      <div class="line"><span class="muted">Toplam (KDV hariç)</span><span class="num">₺${fmt(net)}</span></div>
-      <div class="line"><span class="muted">Toplam KDV</span><span class="num">₺${fmt(vat)}</span></div>
-      <div class="total-line"><span>Genel toplam</span><span class="num">₺${fmt(net + vat)}</span></div>
+      <div class="line"><span class="muted">Toplam (KDV hariç)</span><span class="num">${TL}${fmt(net)}</span></div>
+      <div class="line"><span class="muted">Toplam KDV</span><span class="num">${TL}${fmt(vat)}</span></div>
+      <div class="total-line"><span>Genel toplam</span><span class="num">${TL}${fmt(net + vat)}</span></div>
     </div>
     <div class="section" style="padding-top:0">
       <div class="section-title">Sipariş bilgileri</div>
@@ -330,7 +331,7 @@ function renderOrders() {
       </div>
       <div class="order-items">${(o.items || []).map(i => `${esc(i.name)} ×${i.qty}`).join(" · ")}</div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
-        <span class="num" style="font-size:15px">₺${fmt(o.total)}</span>
+        <span class="num" style="font-size:15px">${TL}${fmt(o.total)}</span>
         <button class="btn-ghost" onclick="reorder('${o.id}')">Tekrarla</button>
       </div>
       ${o.status === "teslim-bekliyor" ? deliveryBlock(o) : ""}

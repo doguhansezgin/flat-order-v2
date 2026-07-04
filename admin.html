@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flat Order — Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css?v=2">
+</head>
+<body>
+
+<div class="wrap-admin" id="panel" style="display:none">
+  <header>
+    <span><span class="wordmark">FLAT</span> <span class="eyebrow" style="margin-left:10px">Panel</span></span>
+    <span style="display:flex;gap:16px;align-items:baseline">
+      <a href="index.html" class="link" style="text-decoration:none;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--soft)">Mağaza</a>
+      <button class="link" style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;text-decoration:none" onclick="doLogout()">Çıkış</button>
+    </span>
+  </header>
+
+  <div class="admin-tabs">
+    <button id="tab-orders" class="active" onclick="showTab('orders')">Siparişler</button>
+    <button id="tab-neworder" onclick="showTab('neworder')">Sipariş gir</button>
+    <button disabled title="Yakında">Ürünler</button>
+    <button disabled title="Yakında">Üyeler</button>
+    <button disabled title="Yakında">Raporlar</button>
+  </div>
+
+  <div id="pane-orders"></div>
+  <div id="pane-neworder" style="display:none"></div>
+</div>
+
+<div class="wrap" id="denied" style="display:none">
+  <header><span class="wordmark">FLAT</span><span class="header-meta">Panel</span></header>
+  <div class="auth" style="text-align:center">
+    <p class="eyebrow" style="margin-bottom:12px">Erişim yok</p>
+    <p style="font-size:15px;line-height:1.7">Bu sayfa yönetici hesapları içindir.<br>Giriş yaptıysanız yetkiniz bulunmuyor.</p>
+    <a href="index.html" class="btn-ghost" style="display:inline-block;margin-top:28px;text-decoration:none">Mağazaya dön</a>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="js/admin.js?v=1"></script>
+</body>
+</html>
