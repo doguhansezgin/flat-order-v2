@@ -3,12 +3,14 @@ import { db, auth, ADMIN_EMAILS } from "./config.js?v=1";
 import {
   collection, doc, addDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { onAuthStateChanged, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 // ---------- durum ----------
 let currentUser = null, userProfile = null;
 let products = [], allOrders = [], adminUsers = [];
 let unsubP = null, unsubO = null;
+let siteCategories = [];
+let openUserUid = null; // üye detay aç/kapa
 let activeTab = "orders";
 let editingOrderId = null;      // düzenleme modundaki sipariş
 let editItems = [];             // düzenleme kopyası
@@ -55,10 +57,15 @@ onAuthStateChanged(auth, async user => {
 });
 
 function startListeners() {
+  onSnapshot(collection(db, "siteCategories"), snap => {
+    siteCategories = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
+    if (activeTab === "products") renderProducts();
+  });
   unsubP = onSnapshot(collection(db, "products"), snap => {
     products = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     products.sort((a, b) => (a.code || "").localeCompare(b.code || "", "tr", { numeric: true }));
     if (activeTab === "neworder") renderNewOrder();
+    if (activeTab === "products") renderProducts();
   });
   unsubO = onSnapshot(collection(db, "orders"), snap => {
     allOrders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -74,14 +81,19 @@ async function loadUsers() {
 }
 
 // ---------- sekmeler ----------
+const TABS = ["orders", "neworder", "products", "users", "reports"];
 window.showTab = function (t) {
   activeTab = t;
-  $("tab-orders").classList.toggle("active", t === "orders");
-  $("tab-neworder").classList.toggle("active", t === "neworder");
-  $("pane-orders").style.display = t === "orders" ? "block" : "none";
-  $("pane-neworder").style.display = t === "neworder" ? "block" : "none";
+  TABS.forEach(x => {
+    $("tab-" + x)?.classList.toggle("active", x === t);
+    const pane = $("pane-" + x);
+    if (pane) pane.style.display = x === t ? "block" : "none";
+  });
   if (t === "orders") renderOrders();
   if (t === "neworder") renderNewOrder();
+  if (t === "products") renderProducts();
+  if (t === "users") renderUsers();
+  if (t === "reports") renderReports();
 };
 
 // =====================================================
@@ -162,6 +174,7 @@ function orderCard(o) {
         <option value="iptal" ${o.status === "iptal" ? "selected" : ""}>İptal</option>
       </select>
       ${editable ? `<button class="btn-ghost" onclick="startEdit('${o.id}')">Düzenle</button>` : ""}
+      <button class="btn-ghost" onclick="generateProforma('${o.id}')">Proforma</button>
       <button class="btn-ghost" style="border-color:var(--danger);color:var(--danger)" onclick="deleteOrder('${o.id}')">Sil</button>
     </div>
   </div>`;
@@ -206,23 +219,46 @@ window.updateOrderStatus = async function (id, status) {
   showToast("Durum güncellendi");
 };
 
+// FIFO: stok girişlerinden kalıcı düşüm yapar, toplam maliyeti döner
+async function consumeFIFO(productId, qty) {
+  const snap = await getDocs(collection(db, "stockEntries"));
+  const entries = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .filter(e => e.productId === productId && (e.remaining ?? e.qty) > 0)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (entries.length === 0) return { costTotal: null, estimated: false };
+  let kalan = qty, total = 0;
+  for (const e of entries) {
+    if (kalan <= 0) break;
+    const rem = e.remaining ?? e.qty;
+    const take = Math.min(kalan, rem);
+    total += take * e.cost;
+    await updateDoc(doc(db, "stockEntries", e.id), { remaining: rem - take });
+    kalan -= take;
+  }
+  if (kalan > 0) total += kalan * entries[entries.length - 1].cost; // giriş yetersiz: son maliyetle tahmin
+  return { costTotal: total, estimated: kalan > 0 };
+}
+
 async function completeOrder(order, unstockedCosts) {
+  const itemsWithCost = [];
   for (const item of order.items) {
-    if (item.manual) continue;
-    const p = products.find(x => x.id === item.id);
-    if (p && !p.unstocked) {
-      await updateDoc(doc(db, "products", item.id), { stock: Math.max(0, (p.stock || 0) - item.qty) });
+    const it = { ...item };
+    if (it.manual) {
+      if (it.cost) it.costTotal = it.cost * it.qty;
+    } else {
+      const p = products.find(x => x.id === it.id);
+      if (p && p.unstocked) {
+        const c = unstockedCosts?.[it.id];
+        if (c) { it.cost = parseFloat(c); it.costTotal = it.cost * it.qty; }
+      } else if (p) {
+        await updateDoc(doc(db, "products", it.id), { stock: Math.max(0, (p.stock || 0) - it.qty) });
+        const fifo = await consumeFIFO(it.id, it.qty);
+        if (fifo.costTotal !== null) { it.costTotal = fifo.costTotal; if (fifo.estimated) it.costEstimated = true; }
+      }
     }
+    itemsWithCost.push(it);
   }
-  if (unstockedCosts) {
-    const itemsWithCost = order.items.map(i => {
-      const cost = unstockedCosts[i.id];
-      return cost ? { ...i, cost: parseFloat(cost) } : i;
-    });
-    await updateDoc(doc(db, "orders", order.id), { status: "teslim-bekliyor", items: itemsWithCost });
-  } else {
-    await updateDoc(doc(db, "orders", order.id), { status: "teslim-bekliyor" });
-  }
+  await updateDoc(doc(db, "orders", order.id), { status: "teslim-bekliyor", items: itemsWithCost });
   if (order.uid) {
     const uRef = doc(db, "users", order.uid);
     const uSnap = await getDoc(uRef);
@@ -564,3 +600,421 @@ window.submitAdminOrder = async function () {
   showToast(`${user.cafe} için sipariş oluşturuldu`);
   renderNewOrder();
 };
+
+// =====================================================
+// PROFORMA
+// =====================================================
+window.generateProforma = function (orderId) {
+  const o = allOrders.find(x => x.id === orderId);
+  if (!o) return;
+  const totalVat = o.totalVat ?? o.items.reduce((s, i) => s + i.price * i.qty * vatOf(i), 0);
+  const totalWithVat = o.totalWithVat ?? (o.total + totalVat);
+  const f = n => new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+  const rows = o.items.map(i => {
+    const lineNet = i.price * i.qty;
+    const lineVat = lineNet * vatOf(i);
+    return `<tr>
+      <td>${esc(i.code || "—")}</td>
+      <td>${esc(i.name)}</td>
+      <td class="r">${i.qty}</td>
+      <td class="r">₺${f(i.price)}</td>
+      <td class="r">%${Math.round(vatOf(i) * 100)}</td>
+      <td class="r">₺${f(lineVat)}</td>
+      <td class="r b">₺${f(lineNet + lineVat)}</td>
+    </tr>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8">
+<title>Proforma ${esc(o.num)}</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,"Segoe UI",Arial,sans-serif; color:#141414; background:#fff; padding:48px; font-size:13px; }
+  .top { display:flex; justify-content:space-between; align-items:baseline; padding-bottom:14px; border-bottom:2px solid #141414; }
+  .mark { font-size:18px; letter-spacing:6px; font-weight:600; }
+  .doc { text-align:right; }
+  .doc h1 { font-size:13px; letter-spacing:3px; font-weight:600; }
+  .doc .sub { font-size:11px; color:#77766F; margin-top:2px; }
+  .parties { display:flex; gap:40px; margin:26px 0; }
+  .party { flex:1; }
+  .plbl { font-size:9px; letter-spacing:2px; text-transform:uppercase; color:#A3A29C; margin-bottom:6px; }
+  .pname { font-size:15px; font-weight:600; }
+  .pdet { font-size:12px; color:#77766F; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; margin-top:6px; }
+  th { font-size:9px; letter-spacing:1.5px; text-transform:uppercase; color:#A3A29C; text-align:left; padding:8px 8px; border-bottom:1px solid #141414; font-weight:600; }
+  td { padding:9px 8px; border-bottom:0.5px solid #E3E1DA; font-variant-numeric:tabular-nums; }
+  .r { text-align:right; } th.r { text-align:right; }
+  .b { font-weight:600; }
+  .totals { margin-left:auto; width:300px; margin-top:16px; }
+  .trow { display:flex; justify-content:space-between; padding:6px 0; border-bottom:0.5px solid #E3E1DA; font-variant-numeric:tabular-nums; }
+  .trow.grand { border-bottom:0; border-top:2px solid #141414; margin-top:4px; padding-top:10px; font-size:16px; font-weight:600; }
+  .note { margin-top:28px; font-size:12px; color:#77766F; border:0.5px solid #E3E1DA; padding:10px 14px; }
+  .foot { margin-top:44px; padding-top:14px; border-top:0.5px solid #E3E1DA; font-size:10px; color:#A3A29C; text-align:center; letter-spacing:0.5px; }
+  .print-btn { position:fixed; top:16px; right:16px; background:#141414; color:#fff; border:0; padding:10px 20px; font-size:11px; letter-spacing:2px; cursor:pointer; }
+  @media print { .print-btn { display:none; } body { padding:24px; } }
+</style></head><body>
+<button class="print-btn" onclick="window.print()">YAZDIR</button>
+<div class="top">
+  <span class="mark">FLAT</span>
+  <div class="doc"><h1>PROFORMA</h1><div class="sub">${esc(o.num)} · ${esc(o.date || "")}</div></div>
+</div>
+<div class="parties">
+  <div class="party"><div class="plbl">Satıcı</div><div class="pname">Flat Coffee &amp; Cake</div><div class="pdet">Merkez Üretim</div></div>
+  <div class="party"><div class="plbl">Alıcı</div><div class="pname">${esc(o.cafe)}</div><div class="pdet">${esc(o.contact)}${o.phone ? " · " + esc(o.phone) : ""}</div></div>
+</div>
+<table>
+  <thead><tr><th>No</th><th>Ürün</th><th class="r">Adet</th><th class="r">Birim</th><th class="r">KDV</th><th class="r">KDV Tutarı</th><th class="r">Toplam</th></tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="totals">
+  <div class="trow"><span>Ara toplam</span><span>₺${f(o.total)}</span></div>
+  <div class="trow"><span>Toplam KDV</span><span>₺${f(totalVat)}</span></div>
+  <div class="trow grand"><span>Genel toplam</span><span>₺${f(totalWithVat)}</span></div>
+</div>
+${o.note ? `<div class="note">Not: ${esc(o.note)}</div>` : ""}
+<div class="foot">Bu belge proforma niteliğinde olup resmi fatura değildir · Flat Coffee &amp; Cake · ${new Date().toLocaleDateString("tr-TR")}</div>
+</body></html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) { showToast("Açılır pencere engellendi — tarayıcı izni verin"); return; }
+  w.document.write(html);
+  w.document.close();
+};
+
+// =====================================================
+// ÜRÜNLER
+// =====================================================
+let prodFilter = "Tümü";
+let prodOpenId = null; // stok girişi açık ürün
+
+function stockBadge(p) {
+  if (p.unstocked) return `<span class="eyebrow">Stoksuz satış</span>`;
+  const s = p.stock ?? 0;
+  const min = p.minStock ?? 5;
+  if (s <= 0) return `<span class="stock-note out">Tükendi</span>`;
+  if (s <= min) return `<span class="stock-note low">Kritik · ${s}</span>`;
+  return `<span class="eyebrow num">Stok ${s}</span>`;
+}
+
+function renderProducts() {
+  const search = $("pr-search")?.value || "";
+  const q = search.toLocaleLowerCase("tr");
+  let list = prodFilter === "Tümü" ? products : products.filter(p => p.cat === prodFilter);
+  if (q) list = list.filter(p => (p.name || "").toLocaleLowerCase("tr").includes(q) || String(p.code || "").includes(q));
+  const kritik = products.filter(p => !p.unstocked && (p.stock ?? 0) <= (p.minStock ?? 5));
+  const cats = ["Tümü", ...siteCategories.map(c => c.name)];
+
+  $("pane-products").innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="stat-num">${products.length}</div><div class="stat-lbl">Ürün</div></div>
+      <div class="stat ${kritik.length ? "alert" : ""}"><div class="stat-num">${kritik.length}</div><div class="stat-lbl">Kritik stok</div></div>
+      <div class="stat"><div class="stat-num">${siteCategories.length}</div><div class="stat-lbl">Kategori</div></div>
+    </div>
+
+    <div class="section" style="padding-bottom:0">
+      <div class="section-title">Yeni ürün</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <span style="flex:1;min-width:110px"><label class="lbl">Kod * <button class="link" style="font-size:10px" onclick="suggestCode()">sıradaki</button></label><input class="field" id="np-code"></span>
+        <span style="flex:2;min-width:170px"><label class="lbl">Ürün adı *</label><input class="field" id="np-name"></span>
+        <span style="flex:1;min-width:110px"><label class="lbl">Fiyat ${TL} (KDV hariç) *</label><input class="field" type="number" step="0.01" min="0" id="np-price"></span>
+        <span style="flex:1;min-width:130px"><label class="lbl">Kategori *</label>
+          <select class="sel" id="np-cat" style="width:100%;margin-top:6px">
+            <option value="">Seçin…</option>
+            ${siteCategories.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")}
+          </select></span>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <span style="flex:1;min-width:110px"><label class="lbl">KDV</label>
+          <select class="sel" id="np-vat" style="width:100%;margin-top:6px">
+            <option value="0.20">%20</option><option value="0.10">%10</option><option value="0.01">%1</option><option value="0">Yok</option>
+          </select></span>
+        <span style="flex:1;min-width:110px"><label class="lbl">Başlangıç stok</label><input class="field" type="number" min="0" id="np-stock" placeholder="0"></span>
+        <span style="flex:1;min-width:110px"><label class="lbl">Kritik eşik</label><input class="field" type="number" min="0" id="np-min" placeholder="5"></span>
+        <span style="flex:1;min-width:90px"><label class="lbl">Emoji</label><input class="field" id="np-emoji" placeholder="☕"></span>
+        <span style="flex:2;min-width:180px"><label class="lbl">Fotoğraf URL</label><input class="field" id="np-img" placeholder="https://…"></span>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="np-unstocked" style="width:15px;height:15px;accent-color:var(--ink)">
+        Stoksuz satış <span class="eyebrow">— sipariş tamamlanırken alış fiyatı sorulur</span>
+      </label>
+      <button class="btn-ghost" style="margin-top:14px" onclick="addProduct()">Ürünü ekle</button>
+    </div>
+
+    <div class="section" style="padding-bottom:0">
+      <div class="section-title">Kategoriler</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        ${siteCategories.map(c => `<span style="border:0.5px solid var(--hair);padding:4px 10px;font-size:12px;display:inline-flex;gap:8px;align-items:center">${esc(c.name)}<button class="x-btn" style="font-size:13px" onclick="deleteCategory('${c.id}', '${esc(c.name)}')" aria-label="Kategoriyi sil">×</button></span>`).join("")}
+        <input class="field" id="new-cat" placeholder="Yeni kategori" style="width:140px;padding:4px 0">
+        <button class="btn-ghost" onclick="addCategory()">Ekle</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Katalog</div>
+      <input class="field" id="pr-search" placeholder="Ürün ara" value="${esc(search)}" oninput="renderProductsKeep()">
+      <div class="cats" style="padding:12px 0 0">
+        ${cats.map(c => `<button class="cat ${c === prodFilter ? "active" : ""}" onclick="setProdFilter('${esc(c)}')">${esc(c)}</button>`).join("")}
+      </div>
+      <div style="margin-top:6px">
+        ${list.map(p => prodRow(p)).join("") || `<div class="empty">Ürün yok</div>`}
+      </div>
+    </div>`;
+}
+window.renderProductsKeep = function () {
+  const el = $("pr-search");
+  const pos = el ? el.selectionStart : null;
+  renderProducts();
+  if (pos !== null) { const n = $("pr-search"); n.focus(); n.setSelectionRange(pos, pos); }
+};
+window.setProdFilter = c => { prodFilter = c; renderProducts(); };
+
+function prodRow(p) {
+  const open = prodOpenId === p.id;
+  return `<div class="edit-row" style="align-items:flex-start;padding:12px 0">
+    <div style="flex:2;min-width:160px">
+      <div class="eyebrow">No ${esc(p.code || "—")} · ${esc(p.cat || "—")}</div>
+      <div>${p.emoji || ""} ${esc(p.name)}</div>
+      <div style="margin-top:3px">${stockBadge(p)}${p.img ? ` <span class="eyebrow">foto ✓</span>` : ""}</div>
+    </div>
+    <label class="eyebrow">Fiyat ${TL}<input type="number" step="0.01" min="0" value="${p.price}" id="pp-${p.id}"></label>
+    <label class="eyebrow">Stok <input type="number" value="${p.stock ?? 0}" id="ps-${p.id}" ${p.unstocked ? "disabled" : ""}></label>
+    <label class="eyebrow">Eşik <input type="number" min="0" value="${p.minStock ?? 5}" id="pm-${p.id}" style="width:52px"></label>
+    <label class="eyebrow">KDV <select class="sel" id="pv-${p.id}">
+      <option value="0.20" ${vatOf(p) === 0.20 ? "selected" : ""}>%20</option>
+      <option value="0.10" ${vatOf(p) === 0.10 ? "selected" : ""}>%10</option>
+      <option value="0.01" ${vatOf(p) === 0.01 ? "selected" : ""}>%1</option>
+      <option value="0" ${vatOf(p) === 0 ? "selected" : ""}>Yok</option>
+    </select></label>
+    <span style="display:flex;gap:8px;align-items:center;padding-top:12px">
+      <button class="btn-ghost" onclick="saveProduct('${p.id}')">Kaydet</button>
+      ${p.unstocked ? "" : `<button class="btn-ghost" onclick="toggleStockEntry('${p.id}')">Stok girişi</button>`}
+      <button class="x-btn" onclick="deleteProduct('${p.id}', '${esc(p.name)}')" aria-label="Ürünü sil">×</button>
+    </span>
+    ${open ? `<div style="flex-basis:100%;border:0.5px solid var(--hair);padding:12px 14px;margin-top:8px">
+      <div class="eyebrow" style="margin-bottom:4px">Stok girişi — ${esc(p.name)}</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+        <span><label class="lbl">Miktar</label><input class="field" type="number" min="1" id="se-qty" style="width:100px"></span>
+        <span><label class="lbl">Birim alış ${TL}</label><input class="field" type="number" step="0.01" min="0" id="se-cost" style="width:120px"></span>
+        <button class="btn-ghost" onclick="addStockEntry('${p.id}')">Kaydet</button>
+      </div>
+      <div class="eyebrow" style="margin-top:8px">Giriş, stok adedini artırır; maliyet FIFO ile sipariş tamamlanırken düşülür.</div>
+    </div>` : ""}
+  </div>`;
+}
+
+window.toggleStockEntry = id => { prodOpenId = prodOpenId === id ? null : id; renderProducts(); };
+
+window.suggestCode = function () {
+  const nums = products.map(p => parseInt(p.code, 10)).filter(n => !isNaN(n));
+  const next = (nums.length ? Math.max(...nums) : 0) + 1;
+  $("np-code").value = String(next).padStart(3, "0");
+};
+
+window.addProduct = async function () {
+  const code = $("np-code").value.trim();
+  const name = $("np-name").value.trim();
+  const price = num($("np-price").value);
+  const cat = $("np-cat").value;
+  if (!code || !name || price <= 0 || !cat) { showToast("Kod, ad, fiyat ve kategori zorunlu"); return; }
+  if (products.some(p => p.code === code)) { showToast("Bu kod zaten kullanımda"); return; }
+  const data = {
+    code, name, price, cat,
+    vat: Number($("np-vat").value),
+    stock: parseInt($("np-stock").value, 10) || 0,
+    minStock: parseInt($("np-min").value, 10) || 5,
+    emoji: $("np-emoji").value.trim(),
+    unstocked: $("np-unstocked").checked
+  };
+  const img = $("np-img").value.trim();
+  if (img) data.img = img;
+  await addDoc(collection(db, "products"), data);
+  showToast("Ürün eklendi");
+};
+
+window.saveProduct = async function (id) {
+  const price = num($("pp-" + id).value);
+  if (price <= 0) { showToast("Geçerli fiyat girin"); return; }
+  const upd = {
+    price,
+    minStock: parseInt($("pm-" + id).value, 10) || 5,
+    vat: Number($("pv-" + id).value)
+  };
+  const stockEl = $("ps-" + id);
+  if (stockEl && !stockEl.disabled) upd.stock = parseInt(stockEl.value, 10) || 0;
+  await updateDoc(doc(db, "products", id), upd);
+  showToast("Kaydedildi");
+};
+
+window.deleteProduct = async function (id, name) {
+  if (!confirm(`"${name}" silinsin mi? Geçmiş siparişlerdeki kayıtları etkilenmez.`)) return;
+  await deleteDoc(doc(db, "products", id));
+  showToast("Silindi");
+};
+
+window.addStockEntry = async function (productId) {
+  const qty = parseInt($("se-qty").value, 10);
+  const cost = num($("se-cost").value);
+  if (!qty || qty < 1 || cost <= 0) { showToast("Miktar ve alış fiyatı gerekli"); return; }
+  await addDoc(collection(db, "stockEntries"), {
+    productId, qty, remaining: qty, cost,
+    date: new Date().toISOString(),
+    dateStr: new Date().toLocaleDateString("tr-TR")
+  });
+  const p = products.find(x => x.id === productId);
+  await updateDoc(doc(db, "products", productId), { stock: (p?.stock || 0) + qty });
+  prodOpenId = null;
+  showToast("Stok girişi kaydedildi");
+};
+
+window.addCategory = async function () {
+  const name = $("new-cat").value.trim();
+  if (!name) return;
+  if (siteCategories.some(c => c.name.toLocaleLowerCase("tr") === name.toLocaleLowerCase("tr"))) { showToast("Bu kategori zaten var"); return; }
+  await addDoc(collection(db, "siteCategories"), { name, order: siteCategories.length + 1 });
+  showToast("Kategori eklendi");
+};
+
+window.deleteCategory = async function (id, name) {
+  const used = products.filter(p => p.cat === name).length;
+  if (used > 0) { showToast(`Silinemez — ${used} ürün bu kategoride`); return; }
+  if (!confirm(`"${name}" kategorisi silinsin mi?`)) return;
+  await deleteDoc(doc(db, "siteCategories", id));
+  showToast("Kategori silindi");
+};
+
+// =====================================================
+// ÜYELER
+// =====================================================
+async function renderUsers() {
+  await loadUsersQuiet();
+  const bekleyen = adminUsers.filter(u => u.approved === false);
+  $("pane-users").innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="stat-num">${adminUsers.length}</div><div class="stat-lbl">Üye</div></div>
+      <div class="stat ${bekleyen.length ? "alert" : ""}"><div class="stat-num">${bekleyen.length}</div><div class="stat-lbl">Onay bekleyen</div></div>
+    </div>
+    ${adminUsers.map(u => userRow(u)).join("") || `<div class="empty">Üye yok</div>`}
+    <div style="height:32px"></div>`;
+}
+async function loadUsersQuiet() {
+  const snap = await getDocs(collection(db, "users"));
+  adminUsers = snap.docs.map(d => d.data()).sort((a, b) => (a.cafe || "").localeCompare(b.cafe || "", "tr"));
+}
+
+function userRow(u) {
+  const open = openUserUid === u.uid;
+  const orders = open ? allOrders.filter(o => o.uid === u.uid) : [];
+  return `<div class="o-card">
+    <div class="o-head">
+      <span>
+        <span style="font-weight:500">${esc(u.cafe || "—")}</span>
+        <span class="o-meta" style="display:inline;margin-left:8px">${esc(u.name || "")}</span>
+        ${u.approved === false ? `<span class="status bekliyor" style="margin-left:8px">Onay bekliyor</span>` : ""}
+        ${u.adminApproved ? `<span class="eyebrow" style="margin-left:8px">Panel yetkili</span>` : ""}
+      </span>
+      <span class="eyebrow num">${u.orderCount || 0} sipariş · ${TL}${fmt(u.totalSpent || 0)}</span>
+    </div>
+    <div class="o-meta">${esc(u.phone || "—")} · ${esc(u.email || "—")}</div>
+    <div class="o-actions">
+      ${u.approved === false ? `<button class="btn-ghost" style="border-color:var(--ok);color:var(--ok)" onclick="approveUser('${u.uid}')">Onayla</button>` : ""}
+      <button class="btn-ghost" onclick="toggleAdminAccess('${u.uid}', ${u.adminApproved === true})">${u.adminApproved ? "Panel yetkisini al" : "Panel yetkisi ver"}</button>
+      <button class="btn-ghost" onclick="adminSendReset('${esc(u.email || "")}')">Şifre sıfırla</button>
+      <button class="btn-ghost" onclick="toggleUserDetail('${u.uid}')">${open ? "Geçmişi kapat" : "Sipariş geçmişi"}</button>
+    </div>
+    ${open ? `<div style="margin-top:10px;border-top:0.5px solid var(--hair);padding-top:8px">
+      ${orders.length === 0 ? `<div class="empty" style="padding:16px 0">Sipariş yok</div>` :
+        orders.map(o => `<div class="sum-row">
+          <span><span class="num">${esc(o.num)}</span> <span class="status ${esc(o.status)}" style="margin-left:8px">${STATUS_LABEL[o.status] || esc(o.status)}</span></span>
+          <span class="eyebrow">${esc(o.date || "")}</span>
+          <span class="num" style="min-width:80px;text-align:right">${TL}${fmt(o.total)}</span>
+        </div>`).join("")}
+    </div>` : ""}
+  </div>`;
+}
+
+window.toggleUserDetail = uid => { openUserUid = openUserUid === uid ? null : uid; renderUsers(); };
+
+window.approveUser = async function (uid) {
+  await updateDoc(doc(db, "users", uid), { approved: true });
+  showToast("Üye onaylandı");
+  renderUsers();
+};
+
+window.toggleAdminAccess = async function (uid, has) {
+  if (!has && !confirm("Bu üyeye panel yetkisi verilsin mi? Siparişleri, ürünleri ve raporları yönetebilecek.")) return;
+  await updateDoc(doc(db, "users", uid), { adminApproved: !has });
+  showToast(has ? "Panel yetkisi alındı" : "Panel yetkisi verildi");
+  renderUsers();
+};
+
+window.adminSendReset = async function (email) {
+  if (!email) { showToast("E-posta kayıtlı değil"); return; }
+  if (!confirm(`${email} adresine şifre sıfırlama maili gönderilsin mi?`)) return;
+  try {
+    await sendPasswordResetEmail(auth, email);
+    showToast("Sıfırlama maili gönderildi");
+  } catch (e) { showToast("Gönderilemedi"); }
+};
+
+// =====================================================
+// RAPORLAR
+// =====================================================
+let reportPeriod = "all";
+
+function inPeriod(o) {
+  if (reportPeriod === "all") return true;
+  const d = new Date(o.createdAt || 0);
+  const now = new Date();
+  if (reportPeriod === "month") return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  if (reportPeriod === "prev") {
+    const pm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return d.getFullYear() === pm.getFullYear() && d.getMonth() === pm.getMonth();
+  }
+  return true;
+}
+
+function renderReports() {
+  const done = allOrders.filter(o => (o.status === "tamamlandi" || o.status === "teslim-bekliyor") && inPeriod(o));
+  let revenue = 0, cost = 0, unknown = 0;
+  const rows = done.map(o => {
+    const oCost = (o.items || []).reduce((s, i) => {
+      if (i.costTotal !== undefined) return s + i.costTotal;
+      if (i.cost !== undefined) return s + i.cost * i.qty;
+      unknown++;
+      return s;
+    }, 0);
+    revenue += o.total; cost += oCost;
+    const profit = o.total - oCost;
+    return { o, oCost, profit, margin: o.total > 0 ? (profit / o.total * 100) : 0 };
+  });
+  const profit = revenue - cost;
+
+  $("pane-reports").innerHTML = `
+    <div class="toolbar">
+      <span class="eyebrow">Dönem</span>
+      <select class="sel" onchange="setReportPeriod(this.value)">
+        <option value="all" ${reportPeriod === "all" ? "selected" : ""}>Tümü</option>
+        <option value="month" ${reportPeriod === "month" ? "selected" : ""}>Bu ay</option>
+        <option value="prev" ${reportPeriod === "prev" ? "selected" : ""}>Geçen ay</option>
+      </select>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-num">${TL}${fmt(revenue)}</div><div class="stat-lbl">Ciro (KDV hariç)</div></div>
+      <div class="stat"><div class="stat-num">${TL}${fmt(cost)}</div><div class="stat-lbl">Maliyet</div></div>
+      <div class="stat"><div class="stat-num">${TL}${fmt(profit)}</div><div class="stat-lbl">Kâr</div></div>
+      <div class="stat"><div class="stat-num">${revenue > 0 ? (profit / revenue * 100).toFixed(1) : "0"}%</div><div class="stat-lbl">Marj</div></div>
+    </div>
+    ${unknown > 0 ? `<div class="note-box" style="margin:14px 20px 0">Bazı kalemlerde maliyet kaydı yok (eski siparişler veya alış fiyatı girilmemiş ürünler) — bu kalemler maliyete 0 olarak yansıdı, kâr olduğundan yüksek görünebilir.</div>` : ""}
+    <div class="section">
+      <div class="section-title">Sipariş bazında</div>
+      ${rows.length === 0 ? `<div class="empty">Bu dönemde tamamlanan sipariş yok</div>` :
+        rows.map(r => `<div class="sum-row">
+          <span style="flex:1;min-width:0"><span class="num">${esc(r.o.num)}</span> <span class="o-meta" style="display:inline;margin-left:6px">${esc(r.o.cafe)}</span></span>
+          <span class="eyebrow">${esc(r.o.date || "")}</span>
+          <span class="num" style="min-width:88px;text-align:right">${TL}${fmt(r.o.total)}</span>
+          <span class="num" style="min-width:88px;text-align:right;color:var(--soft)">−${TL}${fmt(r.oCost)}</span>
+          <span class="num" style="min-width:96px;text-align:right;font-weight:500;color:${r.profit >= 0 ? "var(--ok)" : "var(--danger)"}">${TL}${fmt(r.profit)} <span class="eyebrow">%${r.margin.toFixed(0)}</span></span>
+        </div>`).join("")}
+    </div>`;
+}
+window.setReportPeriod = v => { reportPeriod = v; renderReports(); };

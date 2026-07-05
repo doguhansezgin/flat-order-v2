@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=2">
+<link rel="stylesheet" href="css/style.css?v=3">
 </head>
 <body>
 
@@ -23,13 +23,16 @@
   <div class="admin-tabs">
     <button id="tab-orders" class="active" onclick="showTab('orders')">Siparişler</button>
     <button id="tab-neworder" onclick="showTab('neworder')">Sipariş gir</button>
-    <button disabled title="Yakında">Ürünler</button>
-    <button disabled title="Yakında">Üyeler</button>
-    <button disabled title="Yakında">Raporlar</button>
+    <button id="tab-products" onclick="showTab('products')">Ürünler</button>
+    <button id="tab-users" onclick="showTab('users')">Üyeler</button>
+    <button id="tab-reports" onclick="showTab('reports')">Raporlar</button>
   </div>
 
   <div id="pane-orders"></div>
   <div id="pane-neworder" style="display:none"></div>
+  <div id="pane-products" style="display:none"></div>
+  <div id="pane-users" style="display:none"></div>
+  <div id="pane-reports" style="display:none"></div>
 </div>
 
 <div class="wrap" id="denied" style="display:none">
@@ -43,6 +46,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="js/admin.js?v=1"></script>
+<script type="module" src="js/admin.js?v=3"></script>
 </body>
 </html>

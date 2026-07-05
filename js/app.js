@@ -193,7 +193,7 @@ function renderCatalog() {
     const qty = cart[p.id] || 0;
     const s = p.stock ?? 999;
     const out = !p.unstocked && s <= 0;
-    const low = !p.unstocked && s > 0 && s <= 5;
+    const low = !p.unstocked && s > 0 && s <= (p.minStock ?? 5);
     return `<div class="row">
       ${p.img ? `<img class="thumb" src="${esc(p.img)}" alt="">` : `<div class="thumb">${p.emoji || ""}</div>`}
       <div class="row-info">
