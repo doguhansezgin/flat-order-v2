@@ -218,22 +218,15 @@ function renderCatalog() {
 
   $("catalog-rows").innerHTML = list.map(p => {
     const qty = cart[p.id] || 0;
-    const s = p.stock ?? 999;
-    const out = !p.unstocked && s <= 0;
-    const low = !p.unstocked && s > 0 && s <= (p.minStock ?? 5);
     return `<div class="row">
       ${p.img ? `<img class="thumb" src="${esc(p.img)}" alt="">` : `<div class="thumb">${p.emoji || ""}</div>`}
       <div class="row-info">
         <div class="eyebrow">No ${esc(p.code || "—")} — ${esc(p.cat || "")}</div>
         <div class="row-name">${esc(p.name)}</div>
-        <div class="row-sub">
-          ${low ? `<span class="stock-note low">Son ${s}</span>` : ""}
-          ${out ? `<span class="stock-note out">Tükendi</span>` : ""}
-        </div>
       </div>
       <div class="row-side">
         <div class="price">${TL}${fmt(p.price)}</div>
-        ${out ? "" : qty === 0
+        ${qty === 0
           ? `<button class="btn-line" onclick="addToCart('${p.id}')">Ekle</button>`
           : `<span class="qty">
               <button onclick="decCart('${p.id}')" aria-label="Azalt">−</button>

@@ -251,7 +251,7 @@ async function completeOrder(order, unstockedCosts) {
         const c = unstockedCosts?.[it.id];
         if (c) { it.cost = parseFloat(c); it.costTotal = it.cost * it.qty; }
       } else if (p) {
-        await updateDoc(doc(db, "products", it.id), { stock: Math.max(0, (p.stock || 0) - it.qty) });
+        await updateDoc(doc(db, "products", it.id), { stock: (p.stock || 0) - it.qty });
         const fifo = await consumeFIFO(it.id, it.qty);
         if (fifo.costTotal !== null) { it.costTotal = fifo.costTotal; if (fifo.estimated) it.costEstimated = true; }
       }
@@ -691,7 +691,8 @@ function stockBadge(p) {
   if (p.unstocked) return `<span class="eyebrow">Stoksuz satış</span>`;
   const s = p.stock ?? 0;
   const min = p.minStock ?? 5;
-  if (s <= 0) return `<span class="stock-note out">Tükendi</span>`;
+  if (s < 0) return `<span class="stock-note low">Eksik · ${s} — en az ${-s} alınmalı</span>`;
+  if (s === 0) return `<span class="stock-note out">Tükendi</span>`;
   if (s <= min) return `<span class="stock-note low">Kritik · ${s}</span>`;
   return `<span class="eyebrow num">Stok ${s}</span>`;
 }
