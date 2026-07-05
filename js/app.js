@@ -149,7 +149,7 @@ onAuthStateChanged(auth, async user => {
 
   swapScreen("app");
   $("header-meta").innerHTML = isAdmin
-    ? `<a href="admin.html" style="color:var(--ink);text-decoration:none;border-bottom:1px solid var(--ink)">PANEL</a><span style="margin-left:14px">${esc(userProfile?.cafe || user.email || "")}</span>`
+    ? `<a href="admin.html" style="color:var(--soft);text-decoration:none">Panel →</a><span style="margin-left:14px">${esc(userProfile?.cafe || user.email || "")}</span>`
     : esc(userProfile?.cafe || user.email || "");
   startListeners();
   showView("catalog");

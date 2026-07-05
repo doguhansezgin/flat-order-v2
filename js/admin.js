@@ -57,7 +57,7 @@ onAuthStateChanged(auth, async user => {
 });
 
 function startListeners() {
-  onSnapshot(collection(db, "siteCategories"), snap => {
+  onSnapshot(collection(db, "categories"), snap => {
     siteCategories = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
     if (activeTab === "products") renderProducts();
   });
@@ -870,7 +870,7 @@ window.addCategory = async function () {
   const name = $("new-cat").value.trim();
   if (!name) return;
   if (siteCategories.some(c => c.name.toLocaleLowerCase("tr") === name.toLocaleLowerCase("tr"))) { showToast("Bu kategori zaten var"); return; }
-  await addDoc(collection(db, "siteCategories"), { name, order: siteCategories.length + 1 });
+  await addDoc(collection(db, "categories"), { name, order: siteCategories.length + 1 });
   showToast("Kategori eklendi");
 };
 
@@ -878,7 +878,7 @@ window.deleteCategory = async function (id, name) {
   const used = products.filter(p => p.cat === name).length;
   if (used > 0) { showToast(`Silinemez — ${used} ürün bu kategoride`); return; }
   if (!confirm(`"${name}" kategorisi silinsin mi?`)) return;
-  await deleteDoc(doc(db, "siteCategories", id));
+  await deleteDoc(doc(db, "categories", id));
   showToast("Kategori silindi");
 };
 

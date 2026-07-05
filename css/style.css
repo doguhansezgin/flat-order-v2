@@ -151,11 +151,13 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* SEPET & FORMLAR */
-.section { padding: 18px 20px; }
+.section { padding: 30px 20px 14px; }
+.section + .section { padding-top: 14px; }
 .section-title {
-  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--faint); padding-bottom: 8px; border-bottom: 1px solid var(--ink);
-  margin-bottom: 4px;
+  font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--ink); font-weight: 500;
+  padding-bottom: 10px; border-bottom: 1.5px solid var(--ink);
+  margin-bottom: 8px;
 }
 .line { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 0.5px solid var(--hair); font-size: 14px; }
 .line .muted { color: var(--soft); font-size: 12px; }
