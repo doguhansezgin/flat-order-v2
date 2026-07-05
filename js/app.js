@@ -5,7 +5,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
-  onAuthStateChanged, signInWithPopup, updateProfile, sendPasswordResetEmail
+  onAuthStateChanged, signInWithPopup, signInWithRedirect, getRedirectResult,
+  updateProfile, sendPasswordResetEmail
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 // ---------- durum ----------
@@ -82,21 +83,34 @@ window.doRegister = async function () {
   }
 };
 
+async function ensureUserDoc(user) {
+  const uref = doc(db, "users", user.uid);
+  const snap = await getDoc(uref);
+  if (!snap.exists()) {
+    await setDoc(uref, {
+      uid: user.uid, cafe: user.displayName || "", name: user.displayName || "",
+      phone: "", email: user.email,
+      createdAt: new Date().toISOString(),
+      orderCount: 0, totalSpent: 0, approved: false
+    });
+  }
+}
+
 window.doGoogleLogin = async function () {
   try {
     const res = await signInWithPopup(auth, googleProvider);
-    const uref = doc(db, "users", res.user.uid);
-    const snap = await getDoc(uref);
-    if (!snap.exists()) {
-      await setDoc(uref, {
-        uid: res.user.uid, cafe: res.user.displayName || "", name: res.user.displayName || "",
-        phone: "", email: res.user.email,
-        createdAt: new Date().toISOString(),
-        orderCount: 0, totalSpent: 0, approved: false
-      });
+    await ensureUserDoc(res.user);
+  } catch (e) {
+    if (e.code === "auth/popup-blocked" || e.code === "auth/popup-closed-by-user" && /Mobi|Android/i.test(navigator.userAgent) || e.code === "auth/operation-not-supported-in-this-environment") {
+      try { await signInWithRedirect(auth, googleProvider); } catch (_) { showAuthErr("Google girişi başarısız."); }
+    } else if (e.code !== "auth/popup-closed-by-user") {
+      showAuthErr("Google girişi başarısız.");
     }
-  } catch (e) { if (e.code !== "auth/popup-closed-by-user") showAuthErr("Google girişi başarısız."); }
+  }
 };
+
+// Yönlendirmeli girişten dönüşte üyelik kaydını garanti et
+getRedirectResult(auth).then(res => { if (res?.user) return ensureUserDoc(res.user); }).catch(() => {});
 
 window.doForgotPassword = async function () {
   const email = $("login-email").value.trim();
@@ -118,12 +132,25 @@ window.doLogout = async function () {
 onAuthStateChanged(auth, async user => {
   currentUser = user;
   if (!user) { swapScreen("auth-screen"); stopListeners(); return; }
-  const snap = await getDoc(doc(db, "users", user.uid));
-  userProfile = snap.exists() ? snap.data() : null;
+
+  // Profil yazımı gecikebilir (kayıt anı) — birkaç kez dene
+  userProfile = null;
+  for (let i = 0; i < 4; i++) {
+    const snap = await getDoc(doc(db, "users", user.uid));
+    if (snap.exists()) { userProfile = snap.data(); break; }
+    await new Promise(r => setTimeout(r, 700));
+  }
+
   const isAdmin = ADMIN_EMAILS.includes(user.email) || userProfile?.adminApproved === true;
-  if (!isAdmin && userProfile?.approved === false) { swapScreen("pending-screen"); stopListeners(); return; }
+  // Varsayılan ret: içeri sadece admin, onaylı üye veya eski kayıt (onay alanı hiç olmayan) girer
+  const legacy = userProfile && userProfile.approved === undefined;
+  const allowed = isAdmin || userProfile?.approved === true || legacy;
+  if (!allowed) { swapScreen("pending-screen"); stopListeners(); return; }
+
   swapScreen("app");
-  $("header-meta").textContent = userProfile?.cafe || user.email || "";
+  $("header-meta").innerHTML = isAdmin
+    ? `<a href="admin.html" style="color:var(--ink);text-decoration:none;border-bottom:1px solid var(--ink)">PANEL</a><span style="margin-left:14px">${esc(userProfile?.cafe || user.email || "")}</span>`
+    : esc(userProfile?.cafe || user.email || "");
   startListeners();
   showView("catalog");
 });
