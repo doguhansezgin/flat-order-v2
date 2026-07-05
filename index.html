@@ -96,13 +96,14 @@
   <header><span class="wordmark">FLAT</span></header>
   <div class="auth" style="text-align:center">
     <p class="eyebrow" style="margin-bottom:12px">Kayıt alındı</p>
-    <p style="font-size:15px;line-height:1.7">Hesabınız onay bekliyor.<br>Onaylandığında bu ekran açılacak.</p>
-    <button class="btn-ghost" style="margin-top:28px" onclick="doLogout()">Çıkış yap</button>
+    <p style="font-size:15px;line-height:1.7">Hesabınız onay bekliyor.<br>Onaylandıktan sonra tekrar deneyin.</p>
+    <button class="btn-ghost" style="margin-top:28px" onclick="location.reload()">Tekrar kontrol et</button>
+    <div style="margin-top:16px"><button class="link" onclick="doLogout()">Çıkış yap</button></div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="js/app.js?v=3"></script>
+<script type="module" src="js/app.js?v=4"></script>
 </body>
 </html>
